@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>バンドパスフィルタ ボード線図</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center p-4">
+<h1 class="text-xl font-bold mb-1 text-center">📡 RCバンドパスフィルタ ボード線図</h1>
+<p class="text-gray-400 text-sm mb-4 text-center">R・C値を変えてゲイン/位相特性をリアルタイム表示</p>
+
+<div class="w-full max-w-3xl">
+  <div class="bg-gray-800 rounded-xl p-4 mb-4">
+    <div class="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <label class="flex flex-col text-xs text-gray-400">
+        R1 (kΩ)
+        <input id="R1" type="number" value="10" min="0.1" step="0.1" class="mt-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm">
+      </label>
+      <label class="flex flex-col text-xs text-gray-400">
+        C1 (nF)
+        <input id="C1" type="number" value="100" min="1" step="10" class="mt-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm">
+      </label>
+      <label class="flex flex-col text-xs text-gray-400">
+        R2 (kΩ)
+        <input id="R2" type="number" value="10" min="0.1" step="0.1" class="mt-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm">
+      </label>
+      <label class="flex flex-col text-xs text-gray-400">
+        C2 (nF)
+        <input id="C2" type="number" value="100" min="1" step="10" class="mt-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm">
+      </label>
+    </div>
+    <div id="params" class="mt-3 text-xs text-gray-400 flex gap-6 flex-wrap"></div>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-4 mb-4">
+    <div class="text-xs text-gray-400 mb-2">ゲイン [dB]</div>
+    <canvas id="gainPlot" height="180" class="w-full rounded"></canvas>
+  </div>
+  <div class="bg-gray-800 rounded-xl p-4">
+    <div class="text-xs text-gray-400 mb-2">位相 [deg]</div>
+    <canvas id="phasePlot" height="140" class="w-full rounded"></canvas>
+  </div>
+</div>
+
+<script>
+function getVals(){
+  return {
+    R1:parseFloat(document.getElementById('R1').value)*1e3||1e4,
+    C1:parseFloat(document.getElementById('C1').value)*1e-9||100e-9,
+    R2:parseFloat(document.getElementById('R2').value)*1e3||1e4,
+    C2:parseFloat(document.getElementById('C2').value)*1e-9||100e-9,
+  };
+}
+
+// RC bandpass: HPF (R1,C1) in series with LPF (R2,C2)
+// H(jw) = H_HP(jw) * H_LP(jw)
+// H_HP = jwR1C1 / (1 + jwR1C1)
+// H_LP = 1 / (1 + jwR2C2)
+function H(f, {R1,C1,R2,C2}){
+  const w=2*Math.PI*f;
+  const tau1=R1*C1, tau2=R2*C2;
+  // HP: jw*tau1/(1+jw*tau1)  =>  re = w²t1²/(1+w²t1²), im = wt1/(1+w²t1²)
+  const d1=1+w*w*tau1*tau1;
+  const hp_re=w*w*tau1*tau1/d1, hp_im=w*tau1/d1;
+  // LP: 1/(1+jw*tau2) => re = 1/(1+w²t2²), im = -wt2/(1+w²t2²)
+  const d2=1+w*w*tau2*tau2;
+  const lp_re=1/d2, lp_im=-w*tau2/d2;
+  // multiply complex
+  const re=hp_re*lp_re-hp_im*lp_im;
+  const im=hp_re*lp_im+hp_im*lp_re;
+  const mag=Math.sqrt(re*re+im*im);
+  const phase=Math.atan2(im,re)*180/Math.PI;
+  return {mag,phase};
+}
+
+function plot(){
+  const vals=getVals();
+  const {R1,C1,R2,C2}=vals;
+  const f1=1/(2*Math.PI*R1*C1), f2=1/(2*Math.PI*R2*C2);
+  const fLo=Math.min(f1,f2), fHi=Math.max(f1,f2);
+  document.getElementById('params').innerHTML=
+    `<span>f<sub>L</sub> = <b class="text-blue-400">${fLo.toFixed(1)} Hz</b></span>` +
+    `<span>f<sub>H</sub> = <b class="text-blue-400">${fHi.toFixed(1)} Hz</b></span>` +
+    `<span>BW = <b class="text-green-400">${(fHi-fLo).toFixed(1)} Hz</b></span>` +
+    `<span>Q ≈ <b class="text-yellow-400">${(Math.sqrt(fLo*fHi)/(fHi-fLo)).toFixed(2)}</b></span>`;
+
+  const fMin=1, fMax=1e6;
+  const N=400;
+  const freqs=Array.from({length:N},(_,i)=>fMin*Math.pow(fMax/fMin,i/(N-1)));
+  const data=freqs.map(f=>H(f,vals));
+  const gains=data.map(d=>20*Math.log10(Math.max(d.mag,1e-12)));
+  const phases=data.map(d=>d.phase);
+
+  drawPlot('gainPlot', freqs, gains, {
+    yMin:-60, yMax:5, yLabel:'dB', color:'#60a5fa',
+    gridLines:[-60,-40,-20,-3,0], zeroRef:-3
+  });
+  drawPlot('phasePlot', freqs, phases, {
+    yMin:-100, yMax:100, yLabel:'°', color:'#34d399',
+    gridLines:[-90,-45,0,45,90], zeroRef:0
+  });
+}
+
+function drawPlot(id, freqs, vals, {yMin,yMax,yLabel,color,gridLines}){
+  const cv=document.getElementById(id);
+  const W=cv.offsetWidth||600; cv.width=W;
+  const H=cv.height; const ctx=cv.getContext('2d');
+  ctx.fillStyle='#111827'; ctx.fillRect(0,0,W,H);
+  const pad={l:40,r:10,t:10,b:25};
+  const pw=W-pad.l-pad.r, ph=H-pad.t-pad.b;
+  const fMin=freqs[0], fMax=freqs[freqs.length-1];
+  const toX=f=>pad.l+pw*Math.log10(f/fMin)/Math.log10(fMax/fMin);
+  const toY=v=>pad.t+ph*(1-(v-yMin)/(yMax-yMin));
+
+  // Grid
+  ctx.strokeStyle='#374151'; ctx.lineWidth=1;
+  for(const y of gridLines){
+    const gy=toY(y);
+    ctx.beginPath(); ctx.moveTo(pad.l,gy); ctx.lineTo(pad.l+pw,gy); ctx.stroke();
+    ctx.fillStyle='#6b7280'; ctx.font='9px monospace';
+    ctx.fillText(y+yLabel,2,gy+3);
+  }
+  // Log freq gridlines
+  for(let d=0;d<=6;d++){
+    const f=Math.pow(10,d);
+    if(f<fMin||f>fMax) continue;
+    const gx=toX(f); ctx.beginPath(); ctx.moveTo(gx,pad.t); ctx.lineTo(gx,pad.t+ph); ctx.stroke();
+    ctx.fillStyle='#6b7280'; ctx.font='9px monospace';
+    ctx.fillText(f>=1000?(f/1000)+'k':f+'',gx-8,H-5);
+  }
+  // Curve
+  ctx.strokeStyle=color; ctx.lineWidth=2; ctx.beginPath();
+  freqs.forEach((f,i)=>{ const x=toX(f),y=toY(Math.max(yMin,Math.min(yMax,vals[i]))); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); });
+  ctx.stroke();
+}
+
+['R1','C1','R2','C2'].forEach(id=>document.getElementById(id).addEventListener('input',plot));
+window.addEventListener('resize',plot);
+plot();
+</script>
+</body>
+</html>
